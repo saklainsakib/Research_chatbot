@@ -4,22 +4,32 @@ from flask import Flask, render_template, request, jsonify
 from dotenv import load_dotenv
 from groq import Groq
 
+# Load .env
 load_dotenv()
 
 app = Flask(__name__)
 
+# Get API key
 api_key = os.getenv("GROQ_API_KEY")
 
 if not api_key:
-    raise ValueError("GROQ_API_KEY is not configured.")
+    raise RuntimeError("GROQ_API_KEY is not configured.")
 
+# Groq model
+MODEL_NAME = os.getenv(
+    "GROQ_MODEL",
+    "openai/gpt-oss-120b"
+)
+
+# Create Groq client
 client = Groq(api_key=api_key)
 
 
 SYSTEM_PROMPT = """
 You are ResearchBot, an intelligent research-oriented AI assistant.
 
-Your purpose is to help students understand academic and research topics.
+Your purpose is to help university students understand academic,
+research, and technical topics.
 
 When answering:
 
@@ -31,9 +41,11 @@ When answering:
 6. For technical topics, provide simple examples.
 7. Do not invent citations, papers, statistics, or sources.
 8. Clearly distinguish facts from assumptions.
-9. Make the response academically useful and easy for university students.
+9. Make the response academically useful for university students.
+10. Use simple but academically appropriate language.
 
 Focus especially on:
+
 - Artificial Intelligence
 - Machine Learning
 - Deep Learning
@@ -50,13 +62,27 @@ def home():
     return render_template("index.html")
 
 
+@app.route("/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "message": "ResearchBot server is running.",
+        "model": MODEL_NAME
+    })
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
 
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
-        message = data.get("message", "").strip()
+        if not data:
+            return jsonify({
+                "error": "Invalid or missing JSON request."
+            }), 400
+
+        message = str(data.get("message", "")).strip()
         history = data.get("history", [])
 
         if not message:
@@ -72,25 +98,32 @@ def chat():
         ]
 
         # Add previous conversation
-        for item in history[-10:]:
+        if isinstance(history, list):
 
-            role = item.get("role")
-            content = item.get("content")
+            for item in history[-10:]:
 
-            if role in ["user", "assistant"] and content:
-                messages.append({
-                    "role": role,
-                    "content": content
-                })
+                if not isinstance(item, dict):
+                    continue
 
-        # Current question
+                role = item.get("role")
+                content = item.get("content")
+
+                if role in ["user", "assistant"] and content:
+
+                    messages.append({
+                        "role": role,
+                        "content": str(content)
+                    })
+
+        # Add current question
         messages.append({
             "role": "user",
             "content": message
         })
 
+        # Call Groq
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=MODEL_NAME,
             messages=messages,
             temperature=0.4,
             max_completion_tokens=1500
@@ -98,18 +131,31 @@ def chat():
 
         answer = response.choices[0].message.content
 
+        if not answer:
+            return jsonify({
+                "error": "The AI returned an empty response."
+            }), 500
+
         return jsonify({
-            "answer": answer
+            "answer": answer,
+            "model": MODEL_NAME
         })
 
     except Exception as e:
 
-        print("ERROR:", e)
+        print("========== GROQ/API ERROR ==========")
+        print(type(e).__name__)
+        print(str(e))
+        print("====================================")
 
         return jsonify({
-            "error": str(e)
+            "error": f"AI service error: {str(e)}"
         }), 500
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(
+        host="127.0.0.1",
+        port=5000,
+        debug=False
+    )
